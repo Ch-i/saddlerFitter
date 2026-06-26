@@ -1,0 +1,524 @@
+# Centaur best-practice rule catalog
+# =================================================================================
+# This file is the SOURCE OF TRUTH for what Centaur looks for and how it phrases a
+# recommendation. It is deliberately human-editable and diff-friendly; the queryable
+# database (knowledge.sqlite) is BUILT from it (`python3 -m centaur.cli knowledge build`).
+#
+# Each rule answers three questions the harness needs:
+#   detect          — HOW a candidate is identified (a deterministic AST signal, an
+#                     LLM proposer lens, an external linter id, or a dependency feed).
+#   recommendation  — HOW the harness phrases the fix when the finding is confirmed.
+#   cwe/owasp/uk    — WHICH established standard the recommendation is grounded in, so
+#                     every report line is citable rather than an opinion.
+#
+# Framework slugs are defined in FRAMEWORKS.md. Keeping the mapping explicit is the
+# point: a finding is only as trustworthy as the standard it can be traced to.
+# =================================================================================
+version: 1
+
+meta:
+  ncsc_secure_dev: "NCSC Secure Development & Deployment — 8 principles"
+  code_of_practice: "DSIT/NCSC Software Security Code of Practice 2025 — 14 principles, 4 themes"
+  owasp_top10: "OWASP Top 10 (2021)"
+  owasp_asvs: "OWASP Application Security Verification Standard 5.0"
+  cwe: "MITRE Common Weakness Enumeration"
+
+rules:
+
+  # ── SECURITY ──────────────────────────────────────────────────────────────────
+  - id: SEC-CMD-INJECTION
+    title: Command built from untrusted input (OS command injection)
+    lens: security
+    severity: high
+    cwe: [CWE-78]
+    owasp: { top10: "A03:2021 Injection", asvs: "V2 Validation & Business Logic" }
+    uk:
+      ncsc: plan-for-security-flaws
+      code_of_practice: "1.4 secure by design and secure by default"
+    detect:
+      - { kind: ast, signal: SHELL_TRUE }
+      - { kind: lens, focus: "injection, unsafe shell/eval" }
+      - { kind: external, tool: bandit, ids: [B602, B603, B604, B605, B606, B607] }
+    recommendation: >
+      Do not pass shell=True with interpolated data. Pass argv as a list to
+      subprocess; if a shell is truly required, allowlist the command and quote
+      every argument with shlex.quote. Treat all caller/network/file input as
+      untrusted until validated.
+    references:
+      - https://cwe.mitre.org/data/definitions/78.html
+      - https://owasp.org/Top10/A03_2021-Injection/
+
+  - id: SEC-CODE-INJECTION
+    title: Dynamic code execution of untrusted data (eval/exec)
+    lens: security
+    severity: high
+    cwe: [CWE-94, CWE-95]
+    owasp: { top10: "A03:2021 Injection", asvs: "V2 Validation & Business Logic" }
+    uk: { ncsc: plan-for-security-flaws, code_of_practice: "1.4 secure by design and secure by default" }
+    detect:
+      - { kind: ast, signal: EVAL_EXEC }
+      - { kind: lens, focus: "unsafe eval, dynamic code execution" }
+      - { kind: external, tool: bandit, ids: [B307] }
+    recommendation: >
+      Remove eval()/exec() over external input. Use a data parser (json, ast.literal_eval
+      for literals) or an explicit dispatch table keyed by validated tokens.
+    references:
+      - https://cwe.mitre.org/data/definitions/95.html
+
+  - id: SEC-SQL-INJECTION
+    title: SQL built by string concatenation
+    lens: security
+    severity: high
+    cwe: [CWE-89]
+    owasp: { top10: "A03:2021 Injection", asvs: "V2 Validation & Business Logic" }
+    uk: { ncsc: plan-for-security-flaws, code_of_practice: "1.4 secure by design and secure by default" }
+    detect:
+      - { kind: lens, focus: "SQL string concatenation, injection" }
+      - { kind: external, tool: bandit, ids: [B608] }
+    recommendation: >
+      Use parameterised queries / bound parameters; never format user input into the
+      SQL string. Prefer an ORM or a query builder that parameterises by construction.
+    references:
+      - https://cwe.mitre.org/data/definitions/89.html
+
+  - id: SEC-PATH-TRAVERSAL
+    title: Path built from untrusted input without containment
+    lens: security
+    severity: high
+    cwe: [CWE-22]
+    owasp: { top10: "A01:2021 Broken Access Control", asvs: "V5 File Handling" }
+    uk: { ncsc: plan-for-security-flaws, code_of_practice: "1.4 secure by design and secure by default" }
+    detect:
+      - { kind: lens, focus: "path traversal, ../, unbounded file path from input" }
+    recommendation: >
+      Resolve the path and assert it stays within an allowed base directory
+      (os.path.realpath + commonpath check, or pathlib resolve + is_relative_to).
+      Reject absolute paths and traversal segments from user input.
+    references:
+      - https://cwe.mitre.org/data/definitions/22.html
+
+  - id: SEC-DESERIALIZATION
+    title: Unsafe deserialization of untrusted data
+    lens: security
+    severity: high
+    cwe: [CWE-502]
+    owasp: { top10: "A08:2021 Software and Data Integrity Failures", asvs: "V2 Validation & Business Logic" }
+    uk: { ncsc: plan-for-security-flaws, code_of_practice: "1.4 secure by design and secure by default" }
+    detect:
+      - { kind: lens, focus: "pickle/yaml.load/marshal on untrusted bytes" }
+      - { kind: external, tool: bandit, ids: [B301, B506] }
+    recommendation: >
+      Never unpickle or yaml.load untrusted input. Use a safe loader (yaml.safe_load,
+      json) and a schema validator. Sign-and-verify any serialized blob that must round-trip.
+    references:
+      - https://cwe.mitre.org/data/definitions/502.html
+
+  - id: SEC-HARDCODED-SECRET
+    title: Hardcoded credential or secret in source
+    lens: security
+    severity: high
+    cwe: [CWE-798]
+    owasp: { top10: "A07:2021 Identification and Authentication Failures", asvs: "V14 Data Protection" }
+    uk:
+      ncsc: protect-your-code-repository
+      code_of_practice: "2.1 protect the build environment against unauthorised access"
+    detect:
+      - { kind: lens, focus: "hardcoded password/token/api key/private key" }
+      - { kind: external, tool: bandit, ids: [B105, B106, B107] }
+    recommendation: >
+      Move the secret to an environment variable or a secrets manager and rotate the
+      exposed value. Add the pattern to a pre-commit secret scanner so it cannot recur.
+    references:
+      - https://cwe.mitre.org/data/definitions/798.html
+
+  - id: SEC-MISSING-AUTHZ
+    title: Missing or incomplete authorization check
+    lens: security
+    severity: high
+    cwe: [CWE-862, CWE-285]
+    owasp: { top10: "A01:2021 Broken Access Control", asvs: "V8 Authorization" }
+    uk: { ncsc: plan-for-security-flaws, code_of_practice: "1.4 secure by design and secure by default" }
+    detect:
+      - { kind: lens, focus: "state-changing or sensitive op with no authorization gate" }
+    recommendation: >
+      Enforce authorization server-side on every state-changing or sensitive operation,
+      deny by default, and verify the actor owns/may act on the target resource.
+    references:
+      - https://cwe.mitre.org/data/definitions/862.html
+
+  - id: SEC-SSRF
+    title: Server-side request to a URL derived from input
+    lens: security
+    severity: high
+    cwe: [CWE-918]
+    owasp: { top10: "A10:2021 Server-Side Request Forgery", asvs: "V12 Secure Communication" }
+    uk: { ncsc: plan-for-security-flaws, code_of_practice: "1.4 secure by design and secure by default" }
+    detect:
+      - { kind: lens, focus: "outbound fetch to user-controlled host/URL, SSRF" }
+    recommendation: >
+      Allowlist destination hosts/schemes, resolve and re-check the IP (block private/link-local
+      ranges), and disable redirects to unvetted hosts.
+    references:
+      - https://cwe.mitre.org/data/definitions/918.html
+
+  - id: SEC-WEAK-CRYPTO
+    title: Weak or misused cryptography
+    lens: security
+    severity: medium
+    cwe: [CWE-327, CWE-328]
+    owasp: { top10: "A02:2021 Cryptographic Failures", asvs: "V11 Cryptography" }
+    uk: { ncsc: keep-security-knowledge-sharp, code_of_practice: "1.4 secure by design and secure by default" }
+    detect:
+      - { kind: lens, focus: "MD5/SHA1 for security, ECB mode, static IV, homemade crypto" }
+      - { kind: external, tool: bandit, ids: [B303, B304, B305, B324] }
+    recommendation: >
+      Use vetted primitives (AES-GCM, SHA-256+ for integrity, Argon2/bcrypt for passwords)
+      via a maintained library; never roll your own. Use unique random IVs/nonces.
+    references:
+      - https://cwe.mitre.org/data/definitions/327.html
+
+  - id: SEC-INSECURE-RANDOM
+    title: Insecure randomness for a security decision
+    lens: security
+    severity: medium
+    cwe: [CWE-330]
+    owasp: { top10: "A02:2021 Cryptographic Failures", asvs: "V11 Cryptography" }
+    uk: { ncsc: keep-security-knowledge-sharp, code_of_practice: "1.4 secure by design and secure by default" }
+    detect:
+      - { kind: lens, focus: "random.* used for tokens/passwords/session ids" }
+      - { kind: external, tool: bandit, ids: [B311] }
+    recommendation: >
+      Use secrets / os.urandom (a CSPRNG) for tokens, salts and session identifiers.
+      The `random` module is for simulation, not security.
+    references:
+      - https://cwe.mitre.org/data/definitions/330.html
+
+  - id: SEC-INPUT-VALIDATION
+    title: Missing input validation at a trust boundary
+    lens: security
+    severity: medium
+    cwe: [CWE-20]
+    owasp: { top10: "A03:2021 Injection", asvs: "V2 Validation & Business Logic" }
+    uk: { ncsc: plan-for-security-flaws, code_of_practice: "1.4 secure by design and secure by default" }
+    detect:
+      - { kind: lens, focus: "external data used without type/range/format validation" }
+    recommendation: >
+      Validate and normalise all data crossing a trust boundary against an explicit
+      schema (type, range, length, format) before use; reject rather than coerce.
+    references:
+      - https://cwe.mitre.org/data/definitions/20.html
+
+  # ── CORRECTNESS ───────────────────────────────────────────────────────────────
+  - id: COR-NULL-DEREF
+    title: Possible None/null dereference
+    lens: correctness
+    severity: medium
+    cwe: [CWE-476]
+    owasp: { top10: null, asvs: null }
+    uk: { ncsc: produce-clean-maintainable-code, code_of_practice: "1.3 test software before distribution" }
+    detect:
+      - { kind: lens, focus: "value that can be None used without a guard" }
+    recommendation: >
+      Guard the value (early return / explicit check) or make the type non-optional.
+      Add a test exercising the None branch.
+    references:
+      - https://cwe.mitre.org/data/definitions/476.html
+
+  - id: COR-DIV-ZERO
+    title: Division without a zero guard
+    lens: correctness
+    severity: medium
+    cwe: [CWE-369]
+    owasp: { top10: null, asvs: null }
+    uk: { ncsc: produce-clean-maintainable-code, code_of_practice: "1.3 test software before distribution" }
+    detect:
+      - { kind: lens, focus: "divisor that can be zero / empty denominator" }
+    recommendation: >
+      Check the denominator (or length) before dividing and define the zero case
+      explicitly. Cover it with a test.
+    references:
+      - https://cwe.mitre.org/data/definitions/369.html
+
+  - id: COR-OFF-BY-ONE
+    title: Off-by-one / boundary error
+    lens: correctness
+    severity: medium
+    cwe: [CWE-193]
+    owasp: { top10: null, asvs: null }
+    uk: { ncsc: produce-clean-maintainable-code, code_of_practice: "1.3 test software before distribution" }
+    detect:
+      - { kind: lens, focus: "index/range boundary, inclusive vs exclusive bounds" }
+    recommendation: >
+      Re-derive the boundary against first/last element; prefer iteration over manual
+      indexing. Add tests for the empty, single, and last-element cases.
+    references:
+      - https://cwe.mitre.org/data/definitions/193.html
+
+  - id: COR-RACE-TOCTOU
+    title: Race condition / time-of-check to time-of-use
+    lens: correctness
+    severity: high
+    cwe: [CWE-362, CWE-367]
+    owasp: { top10: null, asvs: "V2 Validation & Business Logic" }
+    uk: { ncsc: plan-for-security-flaws, code_of_practice: "1.4 secure by design and secure by default" }
+    detect:
+      - { kind: lens, focus: "check-then-act on shared/file/DB state without locking" }
+    recommendation: >
+      Make the operation atomic — a single locked critical section, an atomic
+      filesystem call, or a DB transaction/constraint — rather than check-then-act.
+    references:
+      - https://cwe.mitre.org/data/definitions/367.html
+
+  - id: COR-RESOURCE-LEAK
+    title: Resource opened without guaranteed release
+    lens: correctness
+    severity: medium
+    cwe: [CWE-404, CWE-772]
+    owasp: { top10: null, asvs: null }
+    uk: { ncsc: produce-clean-maintainable-code, code_of_practice: "1.3 test software before distribution" }
+    detect:
+      - { kind: lens, focus: "file/socket/lock/handle not closed on all paths" }
+    recommendation: >
+      Acquire the resource in a context manager (with-statement) or try/finally so it
+      is released on every path, including exceptions.
+    references:
+      - https://cwe.mitre.org/data/definitions/772.html
+
+  - id: COR-UNCHECKED-RETURN
+    title: Return value or error not checked
+    lens: correctness
+    severity: low
+    cwe: [CWE-252]
+    owasp: { top10: null, asvs: null }
+    uk: { ncsc: produce-clean-maintainable-code, code_of_practice: "1.3 test software before distribution" }
+    detect:
+      - { kind: lens, focus: "ignored return code / unhandled error path" }
+    recommendation: >
+      Check the return/result and handle the failure path explicitly; do not assume success.
+    references:
+      - https://cwe.mitre.org/data/definitions/252.html
+
+  - id: COR-MUTABLE-DEFAULT
+    title: Mutable default argument
+    lens: correctness
+    severity: medium
+    cwe: [CWE-665]
+    owasp: { top10: null, asvs: null }
+    uk: { ncsc: produce-clean-maintainable-code, code_of_practice: "1.3 test software before distribution" }
+    detect:
+      - { kind: ast, signal: MUTABLE_DEFAULT }
+      - { kind: lens, focus: "mutable default argument shared across calls" }
+    recommendation: >
+      Use None as the default and create the mutable inside the function body; a
+      list/dict/set default is shared across all calls and accumulates state.
+    references:
+      - https://cwe.mitre.org/data/definitions/665.html
+
+  # ── ERROR HANDLING (correctness × maintainability × security) ─────────────────
+  - id: ERR-BARE-EXCEPT
+    title: Bare except catches BaseException
+    lens: maintainability
+    severity: medium
+    cwe: [CWE-396, CWE-755]
+    owasp: { top10: null, asvs: "V16 Security Logging & Error Handling" }
+    uk: { ncsc: produce-clean-maintainable-code, code_of_practice: "1.3 test software before distribution" }
+    detect:
+      - { kind: ast, signal: BARE_EXCEPT }
+      - { kind: lens, focus: "bare except, over-broad exception handling" }
+    recommendation: >
+      Catch the narrowest exception you can handle. A bare `except:` also traps
+      SystemExit/KeyboardInterrupt and hides bugs; catch Exception at most, and re-raise
+      what you cannot handle.
+    references:
+      - https://cwe.mitre.org/data/definitions/396.html
+
+  - id: ERR-SWALLOWED
+    title: "Exception silently swallowed (except: pass)"
+    lens: maintainability
+    severity: medium
+    cwe: [CWE-390, CWE-1069]
+    owasp: { top10: "A09:2021 Security Logging and Monitoring Failures", asvs: "V16 Security Logging & Error Handling" }
+    uk: { ncsc: produce-clean-maintainable-code, code_of_practice: "1.3 test software before distribution" }
+    detect:
+      - { kind: ast, signal: EXCEPT_PASS }
+      - { kind: lens, focus: "exception caught and ignored without logging" }
+    recommendation: >
+      Do not swallow exceptions silently. Log with context (or re-raise). If the empty
+      handler is deliberate, narrow it and add a comment explaining why it is safe.
+    references:
+      - https://cwe.mitre.org/data/definitions/1069.html
+
+  - id: ERR-MISSING-LOGGING
+    title: Security-relevant failure not logged
+    lens: maintainability
+    severity: low
+    cwe: [CWE-778]
+    owasp: { top10: "A09:2021 Security Logging and Monitoring Failures", asvs: "V16 Security Logging & Error Handling" }
+    uk: { ncsc: continually-test-your-security, code_of_practice: "3.3 detect, prioritise and manage vulnerabilities" }
+    detect:
+      - { kind: lens, focus: "auth/authz/validation failure path with no audit log" }
+    recommendation: >
+      Log security-relevant events (auth decisions, validation failures, access denials)
+      with enough context to investigate, without logging secrets or PII.
+    references:
+      - https://cwe.mitre.org/data/definitions/778.html
+
+  # ── PERFORMANCE ───────────────────────────────────────────────────────────────
+  - id: PERF-QUADRATIC
+    title: Avoidable super-linear algorithm
+    lens: performance
+    severity: low
+    cwe: [CWE-407]
+    owasp: { top10: null, asvs: null }
+    uk: { ncsc: produce-clean-maintainable-code, code_of_practice: "1.3 test software before distribution" }
+    detect:
+      - { kind: lens, focus: "nested scan, O(n^2) membership, repeated recomputation" }
+    recommendation: >
+      Replace the inner linear scan with a set/dict lookup or pre-index the data;
+      hoist invariant work out of the loop.
+    references:
+      - https://cwe.mitre.org/data/definitions/407.html
+
+  - id: PERF-UNBOUNDED-RESOURCE
+    title: Unbounded memory or resource consumption
+    lens: performance
+    severity: medium
+    cwe: [CWE-400, CWE-770]
+    owasp: { top10: null, asvs: "V2 Validation & Business Logic" }
+    uk: { ncsc: plan-for-security-flaws, code_of_practice: "1.4 secure by design and secure by default" }
+    detect:
+      - { kind: lens, focus: "whole-file read, unbounded buffer/collection from input" }
+    recommendation: >
+      Stream in bounded chunks and cap the size of any input-driven buffer or collection.
+      Uncontrolled growth from external input is also a denial-of-service vector.
+    references:
+      - https://cwe.mitre.org/data/definitions/400.html
+
+  - id: PERF-REDOS
+    title: Regular expression vulnerable to catastrophic backtracking
+    lens: performance
+    severity: medium
+    cwe: [CWE-1333]
+    owasp: { top10: null, asvs: "V2 Validation & Business Logic" }
+    uk: { ncsc: plan-for-security-flaws, code_of_practice: "1.4 secure by design and secure by default" }
+    detect:
+      - { kind: lens, focus: "nested quantifiers / overlapping alternation in regex on input" }
+    recommendation: >
+      Rewrite the pattern to remove nested/ambiguous quantifiers, anchor it, and bound
+      input length; consider a linear-time regex engine for untrusted input.
+    references:
+      - https://cwe.mitre.org/data/definitions/1333.html
+
+  - id: PERF-BLOCKING-IO
+    title: Blocking I/O or N+1 access inside a loop
+    lens: performance
+    severity: low
+    cwe: [CWE-1049]
+    owasp: { top10: null, asvs: null }
+    uk: { ncsc: produce-clean-maintainable-code, code_of_practice: "1.3 test software before distribution" }
+    detect:
+      - { kind: lens, focus: "per-iteration network/DB call, N+1 query" }
+    recommendation: >
+      Batch the access (one bulk query / request), cache the invariant result, or move
+      I/O out of the hot loop.
+    references:
+      - https://cwe.mitre.org/data/definitions/1049.html
+
+  # ── MAINTAINABILITY ───────────────────────────────────────────────────────────
+  - id: MNT-DUPLICATION
+    title: Duplicated logic
+    lens: maintainability
+    severity: low
+    cwe: [CWE-1041]
+    owasp: { top10: null, asvs: null }
+    uk: { ncsc: produce-clean-maintainable-code, code_of_practice: "1.1 follow an established secure development framework" }
+    detect:
+      - { kind: lens, focus: "copy-pasted block, parallel near-identical branches" }
+    recommendation: >
+      Extract the shared logic into one named function so a fix lands in a single place.
+    references:
+      - https://cwe.mitre.org/data/definitions/1041.html
+
+  - id: MNT-DEAD-CODE
+    title: Dead or unreachable code
+    lens: maintainability
+    severity: info
+    cwe: [CWE-561]
+    owasp: { top10: null, asvs: null }
+    uk: { ncsc: produce-clean-maintainable-code, code_of_practice: "1.1 follow an established secure development framework" }
+    detect:
+      - { kind: lens, focus: "unreachable branch, unused function/variable" }
+    recommendation: >
+      Remove unreachable/unused code; it adds review surface and misleads readers. Rely
+      on version control for history rather than commented-out blocks.
+    references:
+      - https://cwe.mitre.org/data/definitions/561.html
+
+  - id: MNT-IDENTITY-COMPARE
+    title: Equality comparison to None/singleton instead of identity
+    lens: maintainability
+    severity: info
+    cwe: [CWE-480]
+    owasp: { top10: null, asvs: null }
+    uk: { ncsc: produce-clean-maintainable-code, code_of_practice: "1.1 follow an established secure development framework" }
+    detect:
+      - { kind: ast, signal: COMPARE_NONE }
+      - { kind: lens, focus: "== None / != None, equality on a singleton" }
+    recommendation: >
+      Compare singletons with `is` / `is not`. `== None` can be overridden by __eq__ and
+      reads ambiguously.
+    references:
+      - https://cwe.mitre.org/data/definitions/480.html
+
+  - id: MNT-UNCLEAR-NAMING
+    title: Unclear naming or structure that resists testing
+    lens: maintainability
+    severity: info
+    cwe: [CWE-1078]
+    owasp: { top10: null, asvs: null }
+    uk: { ncsc: produce-clean-maintainable-code, code_of_practice: "1.1 follow an established secure development framework" }
+    detect:
+      - { kind: lens, focus: "opaque names, long undecomposed function, hidden side effects" }
+    recommendation: >
+      Name for intent, decompose long functions at their seams, and isolate side effects
+      so the unit is testable.
+    references:
+      - https://cwe.mitre.org/data/definitions/1078.html
+
+  # ── SUPPLY CHAIN (the CVE watch) ──────────────────────────────────────────────
+  - id: SUP-VULN-DEPENDENCY
+    title: Dependency with a known published vulnerability
+    lens: security
+    severity: high
+    cwe: [CWE-1395, CWE-937]
+    owasp: { top10: "A06:2021 Vulnerable and Outdated Components", asvs: "V15 Secure Coding & Architecture" }
+    uk:
+      ncsc: keep-security-knowledge-sharp
+      code_of_practice: "3.3 detect, prioritise and manage vulnerabilities in software components"
+    detect:
+      - { kind: feed, source: "OSV.dev" }
+      - { kind: feed, source: "NVD" }
+    recommendation: >
+      Upgrade to the fixed version (or apply the vendor mitigation), re-run the gate, and
+      record the decision. Triage exploitability in YOUR deployment context before
+      treating a feed severity as the priority.
+    references:
+      - https://owasp.org/Top10/A06_2021-Vulnerable_and_Outdated_Components/
+
+  - id: SUP-FLOATING-PIN
+    title: Unpinned / floating dependency or image tag
+    lens: security
+    severity: medium
+    cwe: [CWE-1357, CWE-1104]
+    owasp: { top10: "A08:2021 Software and Data Integrity Failures", asvs: "V15 Secure Coding & Architecture" }
+    uk:
+      ncsc: secure-the-build-and-deployment-pipeline
+      code_of_practice: "1.2 understand the composition of the software and assess third-party risk"
+    detect:
+      - { kind: feed, source: "SBOM" }
+      - { kind: lens, focus: "floating tag (:latest), unpinned range, no lockfile digest" }
+    recommendation: >
+      Pin to an exact version/digest and track updates deliberately (lockfile + renovate-style
+      review) so a build is reproducible and a compromised upstream cannot silently ship.
+    references:
+      - https://cwe.mitre.org/data/definitions/1357.html

@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "saddlerfitter"
+version = "0.2.0"
+description = "A code-quality and security platform: a consensus-audit harness, a UK-best-practice knowledge base, and an autoresearch watch that learns over time — human in the loop."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+keywords = ["code-audit", "static-analysis", "llm", "consensus", "security", "cve", "owasp", "cwe", "ncsc", "vulnerability"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Security",
+]
+# The LLM backends are external CLIs (claude, codex) using their own local sign-in —
+# they are NOT pip dependencies. PyYAML is the only hard runtime dependency (the
+# knowledge-base catalog). Everything else is the Python standard library.
+dependencies = ["pyyaml>=6.0"]
+
+[project.optional-dependencies]
+# Opt-in richer non-LLM evidence anchor. Normally invoked via `uvx`, but installable too.
+lint = ["ruff", "bandit"]
+
+[project.scripts]
+saddler = "saddlerfitter.cli:main"
+
+[tool.setuptools]
+packages = [
+    "saddlerfitter",
+    "saddlerfitter.cve",
+    "saddlerfitter.irc",
+    "saddlerfitter.checks",
+    "saddlerfitter.knowledge",
+    "saddlerfitter.research",
+]
+
+[tool.setuptools.package-data]
+# Ship the rule catalog and the in-package docs so an installed copy is self-describing.
+saddlerfitter = ["*.md", "docs/*.md", "examples/*.py"]
+"saddlerfitter.knowledge" = ["*.yaml", "*.md"]
+"saddlerfitter.research" = ["*.md"]

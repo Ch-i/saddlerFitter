@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.eggs/
+.venv/
+venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# Runtime state + generated artifacts (regenerate with `saddler knowledge build`)
+**/state/
+**/*.sqlite
+saddlerfitter/knowledge/rules.json
+
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
